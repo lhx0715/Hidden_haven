@@ -1,17 +1,18 @@
 /**
- * 秘境 - 推荐算法 (已优化)
+ * 秘境 - 推荐算法 (Supabase 版本)
  * 
  * 核心算法包括：
- * 1. 【任务二】新的分级打分算法 - 标签匹配度作为最高权重
- * 2. 【任务一】时间系数调整 - 根据出行时间调整费用和拥挤指数
- * 3. 标签匹配过滤
- * 4. 预留AI接口注释（用于未来接入时间序列预测模型）
+ * 1. Supabase 数据库查询 + 多表联查
+ * 2. 标签筛选和时间匹配
+ * 3. 分级打分算法 - 标签匹配度作为最高权重
+ * 4. 时间系数调整 - 根据出行时间调整费用和拥挤指数
  */
 
 import { MOCK_DESTINATIONS } from '../data/mockData.js';
+import { supabase } from '../lib/supabaseClient.js';
 
 /**
- * 异步推荐函数 - 主入口
+ * 异步推荐函数 - 主入口 (Supabase 版本)
  * 
  * 参数：
  *   departingCity: 出发城市 (string)
@@ -21,41 +22,57 @@ import { MOCK_DESTINATIONS } from '../data/mockData.js';
  * 返回：Promise<Array> 排序后的推荐结果（Top 3）
  * 
  * 流程：
- * 1. 标签匹配和初步筛选
- * 2. 计算标签匹配度分级
- * 3. 【任务一】应用时间系数调整指标
- * 4. 【任务二】新的分级打分计算
- * 5. 排序和Top 3提取
- * 6. 模拟加载延迟
+ * 1. 尝试从 Supabase 查询数据
+ * 2. 如果 Supabase 不可用，回退到本地 Mock 数据
+ * 3. 按标签、时间等条件筛选和计分
+ * 4. 返回 Top 3 推荐
  */
 export const getRecommendations = async (departingCity, preferences, travelTime = 'weekend') => {
   // 模拟算法计算滞后，提升用户体验
   await new Promise(resolve => setTimeout(resolve, 1500));
 
+  let destinations;
+
+  try {
+    // 【尝试从 Supabase 查询】
+    destinations = await fetchRecommendationsFromSupabase(
+      departingCity,
+      preferences,
+      travelTime
+    );
+    
+    // 如果 Supabase 返回空或错误，回退到本地
+    if (!destinations || destinations.length === 0) {
+      console.warn('⚠️  Supabase 无数据，回退到本地 Mock 数据');
+      destinations = MOCK_DESTINATIONS;
+    }
+  } catch (error) {
+    console.warn('⚠️  Supabase 查询失败，回退到本地 Mock 数据:', error.message);
+    // 回退到本地 Mock 数据
+    destinations = MOCK_DESTINATIONS;
+  }
+
   // 步骤1：基于用户选择的偏好标签进行筛选
   const filteredDestinations = preferences.length === 0
-    ? MOCK_DESTINATIONS
-    : MOCK_DESTINATIONS.filter(destination =>
+    ? destinations
+    : destinations.filter(destination =>
         preferences.some(pref => 
-          destination.tags.includes(pref)
+          (destination.tags || []).includes(pref)
         )
       );
 
-  // 步骤2：【任务二】分级计算，计算每个目的地的匹配等级和综合得分
+  // 步骤2：分级计算，计算每个目的地的匹配等级和综合得分
   const scoredDestinations = filteredDestinations.map(destination => {
-    // 计算标签匹配数量
-    const matchedTagCount = destination.tags.filter(tag =>
+    const tags = destination.tags || [];
+    const matchedTagCount = tags.filter(tag =>
       preferences.includes(tag)
     ).length;
     
-    // 【任务二】新的分级评分逻辑：
-    // 根据标签匹配数量分级，同级内再比较其他因素
     const matchLevel = calculateMatchLevel(matchedTagCount, preferences.length);
     
-    // 【任务一】应用时间系数，调整 costLevel 和 crowdIndex
+    // 应用时间系数，调整 costLevel 和 crowdIndex
     const adjustedMetrics = applyTimeFactor(destination.baseMetrics, travelTime);
     
-    // 【任务二】新的打分公式：以匹配度分级作为first-order权重
     const score = calculateNewScore(
       destination,
       departingCity,
@@ -67,11 +84,10 @@ export const getRecommendations = async (departingCity, preferences, travelTime 
 
     return {
       ...destination,
-      // 【任务一】覆盖原始指标为调整后的指标
       baseMetrics: adjustedMetrics,
       score,
-      matchLevel, // 【任务二】返回匹配等级用于UI展示
-      matchedTagCount, // 【任务二】返回匹配标签数用于UI展示
+      matchLevel,
+      matchedTagCount,
       matchPercentage: preferences.length === 0 ? 100 : Math.round((matchedTagCount / preferences.length) * 100),
     };
   });
@@ -81,23 +97,101 @@ export const getRecommendations = async (departingCity, preferences, travelTime 
     .sort((a, b) => b.score - a.score)
     .slice(0, 3);
 
-  // ============ AI接口预留扩展点 ============
-  // 未来集成AI预测模型时，可在此处替换为：
-  // const predictions = await fetch('/api/predict-crowd', {
-  //   method: 'POST',
-  //   headers: { 'Content-Type': 'application/json' },
-  //   body: JSON.stringify({
-  //     departingCity,
-  //     destinations: topRecommendations.map(d => d.id),
-  //     date: new Date().toISOString(),
-  //     preferences,
-  //     travelTime,
-  //   }),
-  // }).then(res => res.json());
-  // ==========================================
-
   return topRecommendations;
 };
+
+/**
+ * 【新增】从 Supabase 查询推荐数据
+ * 
+ * 功能：
+ * 1. 从 cities 表查询城市基本信息
+ * 2. 根据出行时间，从 metrics 表关联对应的动态指标
+ * 3. 转换数据格式为老版本的 Mock 数据结构（便于兼容）
+ * 
+ * @param {string} departingCity - 出发城市
+ * @param {Array} preferences - 偏好标签数组
+ * @param {string} travelTime - 出行时间
+ * @returns {Promise<Array>} 转换后的城市数据数组
+ */
+const fetchRecommendationsFromSupabase = async (
+  departingCity,
+  preferences,
+  travelTime = 'weekend'
+) => {
+  try {
+    // Step 1: 查询 cities 表，获取所有城市基本信息
+    let citiesQuery = supabase.from('cities').select('*');
+
+    // 如果用户选了偏好，按 tags 数组包含进行筛选
+    if (preferences.length > 0) {
+      // Supabase 的 PostgreSQL GIN 索引支持 contains 操作符
+      citiesQuery = citiesQuery.contains('tags', preferences);
+    }
+
+    const { data: cities, error: citiesError } = await citiesQuery;
+
+    if (citiesError) {
+      throw new Error(`查询 cities 表失败: ${citiesError.message}`);
+    }
+
+    if (!cities || cities.length === 0) {
+      console.warn('⚠️  Supabase cities 表无数据');
+      return [];
+    }
+
+    // Step 2: 为每个城市获取对应时间段的 metrics 数据
+    const cityIds = cities.map(city => city.id);
+    const { data: metrics, error: metricsError } = await supabase
+      .from('metrics')
+      .select('*')
+      .in('city_id', cityIds)
+      .eq('season_type', travelTime);
+
+    if (metricsError) {
+      throw new Error(`查询 metrics 表失败: ${metricsError.message}`);
+    }
+
+    // Step 3: 合并数据 - 将 metrics 关联到对应的 cities
+    const metricsMap = new Map(metrics?.map(m => [m.city_id, m]) || []);
+
+    const transformedCities = cities.map(city => {
+      const metric = metricsMap.get(city.id);
+
+      // 从 metric 的 travel_time_map 中提取出发城市的耗时
+      const travelTimeValue = metric?.travel_time_map?.[departingCity] || 3;
+
+      // 转换为老版本的 Mock 数据格式，以兼容现有的算法逻辑
+      return {
+        id: city.id,
+        name: city.name,
+        region: city.province,
+        tags: city.tags || [],
+        imageUrl: city.image_url,
+        description: city.description,
+        transportMode: city.transport_mode || 'car',
+        
+        // 核心指标
+        baseMetrics: {
+          funScore: city.fun_score || 80,
+          costLevel: metric?.avg_price || city.base_avg_price || 300,
+          crowdIndex: metric?.crowd_index || city.base_crowd_index || 50,
+        },
+
+        // 匹配度
+        matchLevel: 70,
+        distanceMap: {
+          [departingCity]: travelTimeValue,
+        },
+      };
+    });
+
+    return transformedCities;
+  } catch (error) {
+    console.error('❌ fetchRecommendationsFromSupabase 错误:', error);
+    throw error;
+  }
+};
+
 
 /**
  * 【任务一】时间系数调整函数
