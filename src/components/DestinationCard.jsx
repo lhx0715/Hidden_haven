@@ -29,7 +29,26 @@ export const DestinationCard = ({ destination, departingCity, rank, travelTime, 
   };
 
   const cityName = extractCityName(destination.name);
-  const xiaohongshuUrl = `https://www.xiaohongshu.com/search_result?keyword=${encodeURIComponent(cityName + '旅游攻略')}`;
+  
+  // 【优化】支持手机小红书 App 跳转 + 网页备选
+  const getXiaohongshuUrl = () => {
+    const keyword = cityName + '旅游攻略';
+    const isMobile = /iPhone|iPad|Android|Mobile/i.test(navigator.userAgent);
+    
+    if (isMobile) {
+      // 移动端：优先用小红书 App 深链，失败回退网页
+      return {
+        primary: `xhsdiscover://search?keyword=${encodeURIComponent(keyword)}`,
+        fallback: `https://www.xiaohongshu.com/search_result?keyword=${encodeURIComponent(keyword)}`
+      };
+    } else {
+      // PC 端：直接网页版
+      return {
+        primary: `https://www.xiaohongshu.com/search_result?keyword=${encodeURIComponent(keyword)}`,
+        fallback: null
+      };
+    }
+  };
 
   // 处理外链点击
   const handleExternalLinkClick = () => {
@@ -38,7 +57,20 @@ export const DestinationCard = ({ destination, departingCity, rank, travelTime, 
       city: cityName,
       source: 'recommendation_card',
     });
-    window.open(xiaohongshuUrl, '_blank', 'noopener,noreferrer');
+    
+    const urls = getXiaohongshuUrl();
+    const isMobile = /iPhone|iPad|Android|Mobile/i.test(navigator.userAgent);
+    
+    if (isMobile) {
+      // 移动端：先尝试 App 深链，2 秒后回退网页
+      window.location.href = urls.primary;
+      setTimeout(() => {
+        if (urls.fallback) window.location.href = urls.fallback;
+      }, 2000);
+    } else {
+      // PC 端：直接打开网页
+      window.open(urls.primary, '_blank', 'noopener,noreferrer');
+    }
   };
 
   const crowdStatus = getCrowdStatusColor(destination.baseMetrics.crowdIndex);
