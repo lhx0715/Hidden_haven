@@ -29,47 +29,57 @@ export const DestinationCard = ({ destination, departingCity, rank, travelTime, 
   };
 
   const cityName = extractCityName(destination.name);
-  
-  // 【优化】支持手机小红书 App 跳转 + 网页备选
-  const getXiaohongshuUrl = () => {
-    const keyword = cityName + '旅游攻略';
-    const isMobile = /iPhone|iPad|Android|Mobile/i.test(navigator.userAgent);
-    
-    if (isMobile) {
-      // 移动端：优先用小红书 App 深链，失败回退网页
-      return {
-        primary: `xhsdiscover://search?keyword=${encodeURIComponent(keyword)}`,
-        fallback: `https://www.xiaohongshu.com/search_result?keyword=${encodeURIComponent(keyword)}`
-      };
-    } else {
-      // PC 端：直接网页版
-      return {
-        primary: `https://www.xiaohongshu.com/search_result?keyword=${encodeURIComponent(keyword)}`,
-        fallback: null
-      };
-    }
+  const searchKeyword = `${cityName}旅游攻略`;
+  const xiaohongshuUrl = `https://www.xiaohongshu.com/search_result?keyword=${encodeURIComponent(searchKeyword)}&note_type=0`;
+
+  // 检测环境
+  const detectEnvironment = () => {
+    const ua = navigator.userAgent;
+    return {
+      isWeChat: /micromessenger/i.test(ua),
+      isQQ: /qq\//i.test(ua),
+      isInAppBrowser: /micromessenger|qq|alipay|weibo|dingtalk|zhihu/i.test(ua),
+      isMobile: /iPhone|iPad|Android|Mobile/i.test(ua),
+    };
   };
 
-  // 处理外链点击
+  // 处理外链点击 - 更稳定的方案
   const handleExternalLinkClick = () => {
     trackEvent('outbound_search_click', {
       destination: destination.name,
       city: cityName,
+      keyword: searchKeyword,
       source: 'recommendation_card',
     });
-    
-    const urls = getXiaohongshuUrl();
-    const isMobile = /iPhone|iPad|Android|Mobile/i.test(navigator.userAgent);
-    
-    if (isMobile) {
-      // 移动端：先尝试 App 深链，2 秒后回退网页
-      window.location.href = urls.primary;
+
+    const env = detectEnvironment();
+
+    if (env.isInAppBrowser) {
+      // 【微信/QQ/支付宝等内嵌浏览器】显示提示框
+      const message = `需要在浏览器中打开小红书搜索\n\n搜索词：${searchKeyword}\n\n复制搜索词后，在小红书中搜索即可找到相关笔记`;
+      
+      // 弹出提示
+      alert(message);
+      
+      // 尝试复制搜索词到剪贴板
+      if (navigator.clipboard) {
+        navigator.clipboard.writeText(searchKeyword).then(() => {
+          // 说明都会提示用户已复制
+        }).catch(() => {
+          // 复制失败，用户手动输入
+        });
+      }
+      
+      // 提示后打开链接（用户自行在浏览器中打开）
       setTimeout(() => {
-        if (urls.fallback) window.location.href = urls.fallback;
-      }, 2000);
+        window.open(xiaohongshuUrl, '_blank');
+      }, 500);
+    } else if (env.isMobile) {
+      // 【普通手机浏览器】直接打开小红书网页
+      window.open(xiaohongshuUrl, '_blank', 'noopener,noreferrer');
     } else {
-      // PC 端：直接打开网页
-      window.open(urls.primary, '_blank', 'noopener,noreferrer');
+      // 【PC 端】使用 window.open
+      window.open(xiaohongshuUrl, '_blank', 'noopener,noreferrer');
     }
   };
 
